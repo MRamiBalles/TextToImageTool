@@ -25,22 +25,16 @@ MANIFEST
 venv/
 env/
 ENV/
-.env
+env.bak/
+venv.bak/
 
-# PyCharm
-.idea/
-
-# VS Code
-.vscode/
-
-# Model Weights
-*.safetensors
-*.ckpt
-*.pt
-*.bin
+# Project Directories
+cache/
 weights/
 checkpoints/
 
-# Output
-outputs/
-samples/
+# Large Files
+*.safetensors
+*.bin
+*.pth
+*.tar.gz
