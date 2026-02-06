@@ -6,7 +6,7 @@ import argparse
 # Add src to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from src.engine.memory_manager import MemoryManager
+from src.engine.memory_manager import MemoryManager, apply_dynamic_quant
 from src.engine.text_encoder import DualTextEncoder
 from src.engine.dit import FluxDiT
 from src.engine.vae import VAEWrapper
@@ -55,6 +55,10 @@ def run_inference(prompt: str, height: int = 1024, width: int = 1024, steps: int
     # For now we instantiate the class.
     # In a real run, you would do: dit = FluxDiT.from_pretrained(..., cache_dir=cache_dir)
     dit = FluxDiT(cache_dir=cache_dir, dummy=dummy) 
+    
+    # V2.1 SOTA: Apply Group-wise Dynamic Quantization
+    apply_dynamic_quant(dit.model, group_size=128)
+    
     mm.load_model_to_gpu(dit, "FluxDiT")
 
     sampler = RectifiedFlowScheduler()

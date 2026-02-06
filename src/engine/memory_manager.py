@@ -81,3 +81,87 @@ class MemoryManager:
              module.data = module.data.to(self.storage_dtype)
         
         return model
+
+class DynamicQuantLinear(torch.nn.Module):
+    """
+    V2.1 SOTA Feature: Group-wise Dynamic Activation Quantization.
+    Protects 'Salient Channels' in Flux DiT by calculating scales on-the-fly per token/group.
+    Wraps a standard nn.Linear layer.
+    """
+    def __init__(self, original_linear: torch.nn.Linear, group_size: int = 128):
+        super().__init__()
+        self.in_features = original_linear.in_features
+        self.out_features = original_linear.out_features
+        self.group_size = group_size
+        
+        # Keep weights in original precision (BF16) or FP8, but we need high precision for the kernel
+        self.weight = original_linear.weight
+        if original_linear.bias is not None:
+            self.bias = original_linear.bias
+        else:
+            self.register_parameter('bias', None)
+            
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        x: [B, L, D]
+        Performs group-wise quantization simulation (or actual kernel if available).
+        For this Python implementation, we simulate the numerical protection ensuring 
+        outliers don't saturate the entire tensor.
+        """
+        dtype = x.dtype
+        x_float = x.float() # Calc in FP32
+        
+        # 1. Grouping
+        # [B, L, D] -> [B, L, Groups, GroupDim]
+        B, L, D = x.shape
+        # Pad if not divisible
+        if D % self.group_size != 0:
+            pad = self.group_size - (D % self.group_size)
+            x_float = torch.nn.functional.pad(x_float, (0, pad))
+            D_padded = D + pad
+        else:
+            D_padded = D
+            
+        num_groups = D_padded // self.group_size
+        x_grouped = x_float.view(B, L, num_groups, self.group_size)
+        
+        # 2. Calculate Scale per Group (Dynamic)
+        # s = max(|x|) / 127
+        mx = x_grouped.abs().max(dim=-1, keepdim=True)[0]
+        mx = torch.clamp(mx, min=1e-5)
+        scales = mx / 127.0
+        
+        # 3. Quantize (Fake Quant) to simulate W8A8 effects but protected
+        x_quant = torch.round(x_grouped / scales)
+        x_quant = torch.clamp(x_quant, -128, 127)
+        
+        # 4. Dequantize
+        x_dequant = x_quant * scales
+        x_dequant = x_dequant.view(B, L, D_padded)
+        
+        # Remove padding
+        if D_padded != D:
+            x_dequant = x_dequant[..., :D]
+            
+        # 5. Linear projection
+        # Ideally, we would use an I8 kernel here. For now we use the protected FP activation against weight.
+        out = torch.nn.functional.linear(x_dequant.to(dtype), self.weight, self.bias)
+        return out
+
+def apply_dynamic_quant(model: torch.nn.Module, group_size: int = 128):
+    """
+    Recursively replaces nn.Linear with DynamicQuantLinear in a model.
+    """
+    print(f"[MemoryManager] Applying Dynamic Activation Quantization (GroupSize={group_size})...")
+    count = 0
+    for name, module in model.named_children():
+        if isinstance(module, torch.nn.Linear):
+            # Wrap it
+            setattr(model, name, DynamicQuantLinear(module, group_size=group_size))
+            count += 1
+        else:
+            # Recurse
+            apply_dynamic_quant(module, group_size)
+    if count > 0:
+        print(f"[MemoryManager] Wrapped {count} layers in {model.__class__.__name__}")
+
