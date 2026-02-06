@@ -12,10 +12,11 @@ class DualTextEncoder:
     Implements STRICT sequential offloading to fit in 12GB VRAM.
     Supports DistillT5 fallback for storage constrained environments.
     """
-    def __init__(self, memory_manager: MemoryManager, use_distill_t5: bool = False, cache_dir: Optional[str] = None):
+    def __init__(self, memory_manager: MemoryManager, use_distill_t5: bool = False, cache_dir: Optional[str] = None, dummy: bool = False):
         self.mm = memory_manager
         self.device = self.mm.device
         self.cache_dir = cache_dir
+        self.dummy = dummy
         
         # Paths or IDs
         self.clip_id = "openai/clip-vit-large-patch14" 
@@ -27,11 +28,18 @@ class DualTextEncoder:
         if use_distill_t5:
             print(f"[DualTextEncoder] Optimization Active: Using lightweight T5 ({self.t5_id})")
         
-        # Tokenizers (Always in CPU/RAM, lightweight)
-        print("[DualTextEncoder] Loading Tokenizers...")
-        self.clip_tokenizer = CLIPTokenizer.from_pretrained(self.clip_id, cache_dir=self.cache_dir)
-        # Use AutoTokenizer with use_fast=False to avoid tiktoken conversion issues
-        self.t5_tokenizer = AutoTokenizer.from_pretrained(self.t5_id, use_fast=False, cache_dir=self.cache_dir)
+        if self.dummy:
+            print("[DualTextEncoder] Dummy Mode: Skipping Model Loading.")
+            # We still load tokenizers if possible, or skip?
+            # Let's skip tokenizers too to be safe/fast
+            self.clip_tokenizer = None
+            self.t5_tokenizer = None
+        else:
+            # Tokenizers (Always in CPU/RAM, lightweight)
+            print("[DualTextEncoder] Loading Tokenizers...")
+            self.clip_tokenizer = CLIPTokenizer.from_pretrained(self.clip_id, cache_dir=self.cache_dir)
+            # Use AutoTokenizer with use_fast=False to avoid tiktoken conversion issues
+            self.t5_tokenizer = AutoTokenizer.from_pretrained(self.t5_id, use_fast=False, cache_dir=self.cache_dir)
         
     def encode(self, prompt: str) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -40,6 +48,15 @@ class DualTextEncoder:
             pooled_prompt_embeds: [B, D_clip] (Vector)
             prompt_embeds: [B, L, D_t5] (Sequence)
         """
+        if self.dummy:
+            print(f"[DualTextEncoder] Dummy Mode: Generating random embeddings for '{prompt}'")
+            # Return random tensors matching Flux shapes
+            # CLIP: [1, 768]
+            pooled_prompt_embeds = torch.randn(1, 768).to(self.device, dtype=self.mm.compute_dtype)
+            # T5: [1, 256, 4096] (or 512 depending on max_length)
+            prompt_embeds = torch.randn(1, 256, 4096).to(self.device, dtype=self.mm.compute_dtype)
+            return pooled_prompt_embeds, prompt_embeds
+
         print(f"[DualTextEncoder] Encoding prompt: '{prompt}'")
         
         # 1. CLIP Encoding

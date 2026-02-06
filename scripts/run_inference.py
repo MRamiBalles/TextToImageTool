@@ -13,10 +13,10 @@ from src.engine.vae import VAEWrapper
 from src.engine.noise import RectifiedFlowScheduler, RotaryPositionalEmbeddings
 from src.engine.sampling import EulerFlowSampler
 
-def run_inference(prompt: str, height: int = 1024, width: int = 1024, steps: int = 4, guidance: float = 0.0, seed: int = 42, use_distill: bool = False):
+def run_inference(prompt: str, height: int = 1024, width: int = 1024, steps: int = 4, guidance: float = 0.0, seed: int = 42, use_distill: bool = False, dummy: bool = False):
     print("=== Starting Flux.1 Inference ===")
     print(f"Prompt: {prompt}")
-    print(f"Config: {height}x{width}, Steps={steps}, DistillT5={use_distill}")
+    print(f"Config: {height}x{width}, Steps={steps}, DistillT5={use_distill}, DummyMode={dummy}")
     
     # 0. Setup Cache on D: to avoid System Drive
     cache_dir = "d:/TextToImageTool/cache"
@@ -32,7 +32,7 @@ def run_inference(prompt: str, height: int = 1024, width: int = 1024, steps: int
 
     # 2. Text Encoding
     print("\n[Stage 1] Text Encoding (Sequential Offload)...")
-    encoder = DualTextEncoder(mm, use_distill_t5=use_distill, cache_dir=cache_dir)
+    encoder = DualTextEncoder(mm, use_distill_t5=use_distill, cache_dir=cache_dir, dummy=dummy)
     pooled_prompt, prompt_embeds = encoder.encode(prompt)
     
     print(f"Pooled Shape: {pooled_prompt.shape}")      # [1, 768]
@@ -54,7 +54,7 @@ def run_inference(prompt: str, height: int = 1024, width: int = 1024, steps: int
     # NOTE: Here we would load the actual 'flux1-schnell.safetensors'
     # For now we instantiate the class.
     # In a real run, you would do: dit = FluxDiT.from_pretrained(..., cache_dir=cache_dir)
-    dit = FluxDiT(hidden_size=1024, num_heads=16) 
+    dit = FluxDiT(cache_dir=cache_dir, dummy=dummy) 
     mm.load_model_to_gpu(dit, "FluxDiT")
 
     sampler = RectifiedFlowScheduler()
@@ -97,6 +97,7 @@ if __name__ == "__main__":
     parser.add_argument("--prompt", type=str, default="A futuristic city")
     parser.add_argument("--steps", type=int, default=4)
     parser.add_argument("--distill", action="store_true", help="Use DistillT5 to save space")
+    parser.add_argument("--dummy", action="store_true", help="Use Dummy/Random weights for smoke testing")
     args = parser.parse_args()
     
-    run_inference(args.prompt, steps=args.steps, use_distill=args.distill)
+    run_inference(args.prompt, steps=args.steps, use_distill=args.distill, dummy=args.dummy)
