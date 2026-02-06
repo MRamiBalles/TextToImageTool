@@ -11,14 +11,14 @@ We chose **Flux.1** over Traditional Latent Diffusion (SDXL) or standard DiT (SD
 ### 1.2 Memory Strategy: The "Sequential Offloading" Pipeline
 Targeting **12GB VRAM** (RTX 3060) with a 12B parameter model requires strict memory discipline. We implemented a sequential pipeline:
 1.  **Text Encoding**: T5-XXL (~11B) + CLIP are loaded, prompt is encoded, then **immediately offloaded** to CPU/RAM.
+    - **DistillT5 Optimization**: Fallback support for T5-Base (~250MB) implemented for constrained environments (CVPR 2025 "Scaling Down Text Encoders").
 2.  **Diffusion**: The 12B DiT is loaded. With **FP8 (e4m3fn)** quantization, weights take ~12GB. Activations are kept minimal using **Flash Attention**.
-    > **Warning: Salient Channels in FP8**: DiT models exhibit activation channels with extreme outliers. To prevent quality degradation during FP8 inference, we implement **Dynamic Activation Quantization** (per-token scaling) rather than static Tensor-wise scaling. This is critical for maintaining structure (PTQ4DiT).
+    - **Diffusers Integration**: We wrap `diffusers.FluxTransformer2DModel` to ensure weight compatibility and robust tensor math, while retaining our custom memory orchestration.
 3.  **Decoding**: VAE is loaded last. **Tiled Decoding** is enforced to prevent OOM during the pixel upsampling phase ($128 \times 128 \to 1024 \times 1024$).
 
 ### 1.3 Precision Arithmetic
 - **Weights**: stored in `torch.float8_e4m3fn` (where hardware supports) to maximize model size fitting in VRAM.
-- **Compute**: cast to `torch.bfloat16` for matrix multiplications. FP16 is avoided for the Transformer backbone to prevent numerical instability (NaNs) in the attention layers, though used for VAE.
-- **Accumulators**: Attention logits are computed in FP32 for stability, then cast back.
+- **Compute**: cast to `torch.bfloat16` for matrix multiplications. FP16 is avoided for the Transformer backbone to prevent numerical instability (NaNs) in the attention layers.
 
 ## 2. Tensor Anatomy
 
@@ -26,19 +26,29 @@ Targeting **12GB VRAM** (RTX 3060) with a 12B parameter model requires strict me
 - **VAE Output**: `[B, C, H/8, W/8]` (e.g. 16 channels for Flux).
 - **Packed Latents (DiT Input)**: `[B, Sequence_Length, Hidden_Dim]`.
   - Flux does **not** process grids. It "patchifies" the image (flattening 2x2 blocks) into a 1D sequence.
-  - For $1024 \times 1024$ image:
-    - Latent: $128 \times 128$
-    - Patchify (2x2): $64 \times 64 = 4096$ tokens.
-    - Final Input: `[B, 4096, D]`.
-  - **RoPE Handling**: Since the sequence is 1D, RoPE re-calculates the 2D grid positions `(x, y)` based on the sequence index during the forward pass to apply the correct rotational frequencies.
+  - Final Input: `[B, 4096, D]`.
+  - **RoPE Handling**: Since the sequence is 1D, RoPE re-calculates the 2D grid positions `(x, y)` based on the sequence index during the forward pass.
 
 ### 2.2 Text Embeddings
 - **Pooled (CLIP)**: `[B, 768]`. Provides global style/content context.
 - **Sequence (T5)**: `[B, 256, 4096]`. Provides detailed semantic modification instructions.
 
-## 3. Optimization Techniques
+## 3. Optimization Techniques (Implemented)
 - **Dynamic Thresholding**: Clamps latents to `percentile(99.5)` during sampling to prevent color burn at high CFG scales.
-- **Guidance Interval (Efficient Sampling)**: CFG is strictly limited to the middle 70-80% of inference steps.
-  - *Early Steps (High Noise)*: Structure formation depends mostly on `model_output_cond`. Negative prompt is ineffective here.
-  - *Late Steps (Low Noise)*: Texture refinement. CFG can cause artifacts.
-  - *Benefit*: Reduces overall FLOPs by ~30% by skipping the unconditional pass outside this interval.
+- **Guidance Interval (V1)**: CFG is strictly limited to the middle 70-80% of inference steps.
+- **Simulation Mode**: `--dummy` flag enables full pipeline verification without weight loading (CI/CD standard).
+
+## 4. SOTA Roadmap (V2.1 - Planned)
+
+### 4.1 Time-Varying Guidance (TV-CFG)
+Current static guidance (Interval 10-80%) will be upgraded to **Dynamic Guidance Scheduling**.
+- **Theory**: Generation has three stages: Direction Shift, Mode Separation, and Concentration.
+- **Implementation**: A time-dependent guidance curve (Triangle/Cosine) that is low at $t=1$, peaks at $t=0.5$, and decays at $t=0$.
+
+### 4.2 Dynamic Activation Quantization (Salient Channels)
+Standard Int8/FP8 quantization degrades DiT quality due to "Salient Channels" with extreme variance.
+- **Solution (PTQ4DiT)**: Implement **Group-wise** or **Token-wise** dynamic scaling for activations.
+- **Action**: Add pre-processing hooks to smooth outliers before quantization ("SmoothQuant").
+
+### 4.3 Cache Optimization
+- **TeaCache / Skip-Cache**: Leverage temporal redundancy between steps. If embedding changes < $\epsilon$, reuse previous DiT block outputs to speed up inference by 1.5x.
