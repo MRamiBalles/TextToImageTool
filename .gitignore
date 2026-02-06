@@ -1,0 +1,46 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments
+venv/
+env/
+ENV/
+.env
+
+# PyCharm
+.idea/
+
+# VS Code
+.vscode/
+
+# Model Weights
+*.safetensors
+*.ckpt
+*.pt
+*.bin
+weights/
+checkpoints/
+
+# Output
+outputs/
+samples/
